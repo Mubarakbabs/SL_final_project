@@ -1,0 +1,443 @@
+
+## Load Libraries
+```{r}
+library(tidyverse)
+library(skimr)
+library(zoo)
+library(car)
+library(corrplot)
+library(rpart)
+```
+
+## Load datasets
+```{r}
+train <- read.csv("~/UniMi/SL_FINAL_PROJECT/dseats_2024_training_dataset.csv")
+str(train)
+```
+There are 14 variables. The last one "Oil.Production..stb.day." is the target variable. 
+
+We create a new dataframe for all the predictors, dropping field name and flow kind because they have a single value so they add nothing to the model.
+```{r}
+X <- train[1:13] %>% select(-Field.Name, -FLOW_KIND)
+y <- (train[14])
+```
+
+Next we rename the variables to make them easier to work with
+
+```{r}
+col_names <- c(
+            "production_date", 
+            "well_bore_code", 
+            "n_well_bore_code", 
+            "well_bore_name", 
+            "well_type", 
+            "downward_pressure_psi", 
+            "downhole_temp_kelvin",
+            "avg_tubing_pressure", 
+            "annulus_pressure_psi", 
+            "avg_whp_psi", 
+            "choke_size"
+)
+colnames(X) <- col_names
+colnames(X)
+```
+
+these variables are the sanme with well_bore_code
+```{r}
+X <- X %>% select(-well_bore_name, -n_well_bore_code)
+```
+
+We also note that well_type has the same value for all observations except one.
+Thus, it is equivalent to having only one value across all variables. We will also drop it from the model
+
+```{r}
+table(X$well_type)
+X<- X %>% select(-well_type)
+```
+
+The production date is in character format so we convert production date into date
+```{r}
+X$production_date <- as.Date(X$production_date, format = "%d/%m/%Y")
+```
+
+
+Missing values in choke size variable
+# Count the number of rows with missing values in the choke size variable
+```{r}
+missing_rows <- sum(is.na(X$choke_size))
+missing_rows
+```
+There are only six values with missing values on the choke.size variable. We don't drop them so we don't want to mess with the time series
+We can consider imputing them based on:
+i. the values on the days before or after them. 
+ii. the average values
+
+The first will be best if choke.size shows time dependency. Let's plot the time series to see
+# Plotting the line chart
+
+```{r}
+ggplot(X, aes(x = production_date, y = choke_size)) +
+    geom_line() +
+    labs(x = "Production Date", y = "Choke Size") +
+    ggtitle("Trend of Choke Size over Production Date")
+```
+The choke_size variable shows a visible trend over time (which is also similar to the trend of oil production)
+# Impute missing values for choke_size with 7-day rolling average
+
+```{r}
+X$choke_size_rolling <- zoo::rollmeanr(X$choke_size, k = 7, fill = NA, align = "right", na.rm = TRUE)
+X <- X %>%
+  mutate(choke_size = ifelse(is.na(choke_size), choke_size_rolling, choke_size))
+X <- X %>% select(-choke_size_rolling)
+sum(is.na(X$choke_size))
+```
+
+
+We establish a baseline by running a regression model on the variables as is. To do this we combine the variables in one df
+```{r}
+all_variables <- cbind(X,y)
+colnames(all_variables)[ncol(all_variables)] <- "y" # Rename target to y
+model_all_variables <- lm(y ~ . , data = all_variables)
+summary(model_all_variables)
+```
+
+##Feature engineering
+Time factor
+we explore what time trends we can find to include another time variable in our model
+
+First we visualize the entire time series to see if there are any visible trends
+
+```{r}
+agg_production_date <- all_variables %>%
+    group_by(production_date) %>%
+    summarise(total_y = sum(y))
+
+ggplot(agg_production_date, aes(x = production_date, y = total_y)) +
+    geom_line() +
+    geom_smooth() +
+    labs(x = "Production Date", y = "Total y") +
+    ggtitle("Trend of Total y over Production Date")
+```
+Even though it's quite noisy we can see a trend over time in y. 
+Thus, we notice two things:
+1. the model may be autoregressive, and a lag variable should be predictive of the next value
+2. There is no linear relationship over time. Instead the trend looks cubic
+
+
+```{r}
+# Create a lag variable for y
+all_variables <- all_variables %>%
+  arrange(production_date) %>%
+  group_by(well_bore_code) %>% 
+  mutate(lag_y = lag(y, order_by = production_date)) %>%
+  ungroup()
+```
+
+# Create year_month, month, day, and weekday variables from production_date
+```{r}
+all_variables <- all_variables %>%
+    mutate(
+        year_month = format(production_date, "%Y%m"),
+        year = year(production_date),
+        month = month(production_date),
+        day = day(production_date),
+        weekday = wday(production_date, label = TRUE)
+    )
+
+# Aggregate y by year_month, month, day, and weekday
+agg_year_month <- all_variables %>%
+    group_by(year_month) %>%
+    summarise(total_y = sum(y))
+agg_month <- all_variables %>%
+    group_by(month, year) %>%
+    summarise(total_y = sum(y))
+agg_weekday <- all_variables %>%
+    group_by(weekday) %>%
+    summarise(total_y = sum(y))
+agg_day <- all_variables %>%
+    group_by(day, month) %>%
+    summarise(total_y = sum(y))
+```
+
+Visualize trends
+# Create line charts
+Viewing the total oil production in each month
+```{r}
+ggplot(agg_year_month, aes(x = year_month, y = total_y)) +
+    geom_bar(stat = "identity") +
+    labs(x = "Year-Month", y = "Total y") +
+    ggtitle("Total y by Year-Month") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+Visualizing monthly trends for each year to scan for patterns
+
+```{r}
+ggplot(agg_month, aes(x = month, y = total_y, color = factor(year))) +
+    geom_line() +
+    labs(x = "Month", y = "Total y") +
+    ggtitle("Total y by Month") +
+    scale_color_discrete(name = "Year")
+```
+We can see that there is no trend by month that is constant year on year
+
+Visualizing daily trends over each month
+
+```{r}
+ggplot(agg_day, aes(x = day, y = total_y, color = factor(month))) +
+    geom_line() +
+    labs(x = "Day", y = "Total y") +
+    ggtitle("Total y by Day") +
+    scale_color_discrete(name = "Month")
+```
+
+Visualizing trend by weekday
+
+```{r}
+ggplot(agg_weekday, aes(x = weekday, y = total_y)) +
+    geom_bar(stat = "identity") +
+    labs(x = "Weekday", y = "Total y") +
+    ggtitle("Total y by Weekday")
+```
+For all time periods, there is no particular trend. Hence, we can conclude that there is no cyclical component to the time series
+
+Hence we remove time-related variables
+```{r}
+# Remove the time-related variables
+all_variables <- all_variables %>% select(-year_month, -month, -day, -year, -weekday)
+str(all_variables)
+```
+
+
+While the model works very well in its current form, we have generally assumed a linear relationship can we get an even higher performance if we are able to approximate non-linear relationships?
+
+Now we evaluate the possibility of non-linear relationships
+
+Time factor
+We look at the trend of oil production over time once again, which is obviously not a linear relationship.
+
+```{r}
+ggplot(all_variables, aes(x = production_date, y = y, color = well_bore_code)) +
+    geom_line() +
+    labs(x = "Production Date", y = "y") +
+    ggtitle("Trend of y over Production Date") +
+    scale_color_discrete(name = "Well Bore Code")
+```
+
+
+By visualizing the oil production over time for each well, we notice the drop in production in the two wells from the beginning, before three other wells were added to supplement production
+This may indicate:
+i. An interaction effect. The effect of time on oil production volume is well dependent. That is, in the initial stages, wells increase in production till they get to full capacity. However, as the oil reserves depletes, the volume of oil from each well starts to fall
+Hence we consider introducing an interaction effect between days_from_origin and well_bore_code
+ii. Also the trend between time and oil production is non linear, so we introduce a quadratic term
+
+```{r}
+# Create days_from_origin variable
+all_variables <- all_variables %>% 
+    arrange(production_date) %>% 
+    group_by(well_bore_code) %>% 
+    mutate(days_from_origin = as.numeric(production_date - min(production_date))) %>% 
+    ungroup()
+all_variables <- all_variables %>% select(-production_date)
+# Fit the linear regression model with an interaction effect between days_from_origin and well_bore_code
+model_interaction <- lm(y ~ . + I(days_from_origin^2) + days_from_origin * well_bore_code, data = all_variables)
+summary(model_interaction)
+```
+Both the interaction effects and days_from_origin^2 are significant
+Note that the interaction effects are significant for the older wells that have gone full cycle. The newer wells have not yet experienced the entire cycle so the interaction effects are not yet noticeable
+
+
+##Correlations
+
+Next we analyse the correlations of the numeric variables, and then evaluate the possibility of non-linear relationships
+```{r}
+numeric_variables <- all_variables %>% select(downward_pressure_psi, 
+                                            downhole_temp_kelvin,
+                                            avg_tubing_pressure,
+                                            annulus_pressure_psi,
+                                            avg_whp_psi,
+                                            choke_size)
+y <- all_variables$y
+correlation <- cor(numeric_variables, y)
+correlation
+```
+
+Annulus pressure had the lowest correlation with the target. A regresssion on annulus pressure assuming a quadratic relationship showed a better performance
+```{r}
+model_annulus <- lm(y ~ . + I(annulus_pressure_psi^2) + I(days_from_origin^2) + days_from_origin * well_bore_code, data = all_variables)
+summary(model_annulus)
+```
+
+```{r}
+# Calculate the correlation between each pair of numeric variables
+correlation_matrix <- cor(numeric_variables, use = "pairwise.complete.obs")
+correlation_matrix
+
+# Visualize the correlation matrix
+library(corrplot)
+corrplot(correlation_matrix, method = "color")
+```
+
+We notice that downward_pressure_psi, downhole_temp_kelvin and avg_tubing_pressure are highly correlated amongst one another
+This means that when more downward pressure is applied, there is a higher downhole temperature, probably because the well digs deeper.
+The same applies to average tubing pressure. 
+
+Let's Calculate the Variance Inflation Factor
+```{r}
+model <- lm(y ~ ., data = all_variables)
+vif_results <- vif(model)
+vif_results
+```
+
+While the GVIF values are high, the adjusted GVIF value for avg_tubing pressure is less than 5. 
+However, the values are between 5 and 10 for downhole temperature and downward pressure.
+This is not outrightly bad, but fitting the models again can help us detect if the model performs better if one of them is dropped
+
+```{r}
+model_no_downhole_temp <- lm(y ~ . - downhole_temp_kelvin + I(annulus_pressure_psi^2) + I(days_from_origin^2) + days_from_origin * well_bore_code, data = all_variables)
+summary(model_no_downhole_temp)
+```
+
+```{r}
+model_no_downward_pressure_psi<- lm(y ~ . - downward_pressure_psi + I(annulus_pressure_psi^2) + I(days_from_origin^2) + days_from_origin * well_bore_code, data = all_variables)
+summary(model_no_downward_pressure_psi)
+```
+In each case, the r_squared slightly reduces by removing the variables. This shows that removing either of these variables affects the performance of the model. Hence there's good reason to keep them both
+
+
+##Examining non linear relationships between numeric variables and the target
+
+# Scatterplot between each numeric variable and y
+```{r}
+par(mfrow = c(3, 2)) # Set the layout of the plots to 3 rows and 2 columns
+
+for (col in colnames(numeric_variables)) {
+    plot(x = numeric_variables[[col]], y = y, main = paste("Scatterplot of", col, "vs y"), xlab = col, ylab = "y")
+}
+```
+
+```{r}
+set.seed(123)  # Set seed for reproducibility
+train_indices <- sample(1:nrow(all_variables), size = round(0.8 * nrow(all_variables)), replace = FALSE)  # Randomly select indices for training set
+train_set <- all_variables[train_indices, ]  # Create training set
+test_set <- all_variables[-train_indices, ]  # Create test set
+```
+
+```{r}
+# Fit the linear regression model using all_variables on y
+model <- lm(y ~ ., data = train_set)
+summary(model)
+```
+
+```{r}
+# Predict on the test set using the trained model
+predictions <- predict(model, newdata = test_set %>% select(-y))
+
+# Calculate R-squared
+r_squared <- 1 - sum((test_set$y - predictions)^2, na.rm = TRUE) / sum((test_set$y - mean(test_set$y))^2, na.rm = TRUE)
+r_squared
+
+# Calculate Mean Squared Error (MSE)
+mse <- mean((test_set$y - predictions)^2, na.rm = TRUE)
+mse
+
+# Calculate Mean Absolute Error (MAE)
+mae <- mean(abs(test_set$y - predictions), na.rm = TRUE)
+mae
+
+
+# Print the results
+print(r_squared)
+print(mse)
+print(mae)
+
+
+```
+
+
+
+
+
+
+
+
+# Fit a regression decision tree using the train set
+tree_model <- rpart(y ~ ., data = train_set, method = "anova")
+
+# Predict on the test set using the trained tree model
+tree_predictions <- predict(tree_model, newdata = test_set)
+
+# Calculate R-squared
+tree_r_squared <- 1 - sum((test_set$y - tree_predictions)^2, na.rm = TRUE) / sum((test_set$y - mean(test_set$y))^2, na.rm = TRUE)
+
+# Calculate Mean Squared Error (MSE)
+tree_mse <- mean((test_set$y - tree_predictions)^2, na.rm = TRUE)
+
+# Calculate Mean Absolute Error (MAE)
+tree_mae <- mean(abs(test_set$y - tree_predictions), na.rm = TRUE)
+
+# Print the results
+print(tree_r_squared)
+print(tree_mse)
+print(tree_mae)
+
+library(ggplot2)
+
+# Create a data frame with days_from_origin, y, predictions, and tree_predictions
+plot_data <- data.frame(days_from_origin = test_set$days_from_origin,
+                        y = test_set$y,
+                        predictions = predictions,
+                        tree_predictions = tree_predictions)
+
+# Plot the line chart
+ggplot(plot_data, aes(x = days_from_origin)) +
+  geom_line(aes(y = y, color = "Actual")) +
+  # geom_line(aes(y = predictions, color = "Predictions")) +
+   geom_line(aes(y = tree_predictions, color = "Tree Predictions")) +
+  labs(x = "Days from Origin", y = "Value") +
+  ggtitle("Comparison of Actual, Predicted, and Tree Predicted Values") +
+  scale_color_manual(values = c("Actual" = "blue", "Predictions" = "red", "Tree Predictions" = "green"))
+
+# Fit a random forest model using the train set
+library('randomForest')
+# Remove rows with missing values
+train_set <- na.omit(train_set)
+
+# Fit a random forest model using the train set
+rf_model <- randomForest(y ~ ., data = train_set)
+skim_without_charts(train_set)
+# Predict on the test set using the trained random forest model
+rf_predictions <- predict(rf_model, newdata = test_set)
+
+# Calculate R-squared
+rf_r_squared <- 1 - sum((test_set$y - rf_predictions)^2, na.rm = TRUE) / sum((test_set$y - mean(test_set$y))^2, na.rm = TRUE)
+
+# Calculate Mean Squared Error (MSE)
+rf_mse <- mean((test_set$y - rf_predictions)^2, na.rm = TRUE)
+
+# Calculate Mean Absolute Error (MAE)
+rf_mae <- mean(abs(test_set$y - rf_predictions), na.rm = TRUE)
+
+# Print the results
+print(rf_r_squared)
+print(rf_mse)
+print(rf_mae)
+
+
+# Create a data frame with days_from_origin, y, predictions, and tree_predictions
+plot_data <- data.frame(days_from_origin = test_set$days_from_origin,
+                        y = test_set$y,
+                        predictions = predictions,
+                        tree_predictions = tree_predictions,
+                        rf_predictions = rf_predictions)
+
+# Plot the line chart
+ggplot(plot_data, aes(x = days_from_origin)) +
+  geom_line(aes(y = y, color = "Actual")) +
+  geom_line(aes(y = predictions, color = "Predictions")) +
+   geom_line(aes(y = tree_predictions, color = "Tree Predictions")) +
+   geom_line(aes(y = rf_predictions, color = "RF Predictions")) +
+  labs(x = "Days from Origin", y = "Value") +
+  ggtitle("Comparison of Actual, Predicted, and Tree Predicted Values") +
+  scale_color_manual(values = c("Actual" = "black", "Predictions" = "red", "Tree Predictions" = "green", "RF Predictions" = "blue"))
+
