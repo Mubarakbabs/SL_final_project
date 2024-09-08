@@ -447,7 +447,7 @@ rf_model <- randomForest(y ~ ., data = train_set, ntree=500)
 # Predict on the test set using the trained random forest model
 rf_predictions <- predict(rf_model, newdata = test_set)
 
-# Calculate R-squared
+# Calculate R-squar
 rf_r_squared <- 1 - sum((test_set$y - rf_predictions)^2, na.rm = TRUE) / sum((test_set$y - mean(test_set$y))^2, na.rm = TRUE)
 
 # Calculate Mean Squared Error (MSE)
