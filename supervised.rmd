@@ -9,6 +9,7 @@ library(corrplot)
 library(rpart)
 library(here)
 library(randomForest)
+library(corrplot)
 ```
 
 ## Load datasets
@@ -17,6 +18,10 @@ data <- read.csv(here('oil_generation_prediction.csv'))
 str(data)
 ```
 There are 14 variables. The last one "Oil.Production..stb.day." is the target variable. 
+
+```{r}
+summary(data)
+```
 
 We create a new dataframe for all the predictors, dropping field name and flow kind because they have a single value so they add nothing to the model.
 ```{r}
@@ -62,6 +67,17 @@ The production date is in character format so we convert production date into da
 X$production_date <- as.Date(X$production_date, format = "%d/%m/%Y")
 ```
 
+Time range in the dataset
+```{r}
+X %>% group_by(well_bore_code)%>% summarise(min_date = min(production_date))
+
+max(X$production_date)
+```
+Each well wasn't available throughout the time period. The wells commenced production on the following dates:
+
+```{r}
+X %>% group_by(well_bore_code)%>% summarise(min_date = min(production_date))
+```
 
 Missing values in choke size variable
 
@@ -308,7 +324,6 @@ correlation_matrix <- cor(numeric_variables, use = "pairwise.complete.obs")
 correlation_matrix
 
 # Visualize the correlation matrix
-library(corrplot)
 corrplot(correlation_matrix, method = "color")
 ```
 
@@ -446,6 +461,9 @@ print(rf_r_squared)
 print(rf_mse)
 print(rf_mae)
 ```
+
+
+Plotting the values of the actuals against predictions
 ```{r}
 
 # Create a data frame with production date, actual test values and predictions
@@ -453,12 +471,23 @@ plot_data <- data.frame(production_date = test_set$production_date,
                         y = test_set$y,
                         linear_predictions = linear_predictions,
                         tree_predictions = tree_predictions,
-                        rf_predictions = rf_predictions)
+                        rf_predictions = rf_predictions,
+                        well_bore_code = test_set$well_bore_code)
+
+# Summarize the sum of y, linear_predictions, tree_predictions, and rf_predictions grouped by well_bore_code
+summarized_data <- plot_data %>%
+  group_by(production_date, well_bore_code) %>%
+  summarize(
+    sum_y = sum(y, na.rm = TRUE),
+    sum_linear_predictions = sum(linear_predictions, na.rm = TRUE),
+    sum_tree_predictions = sum(tree_predictions, na.rm = TRUE),
+    sum_rf_predictions = sum(rf_predictions, na.rm = TRUE)
+  )
 
 # Plot the line chart
-ggplot(plot_data, aes(x = production_date)) +
-  geom_line(aes(y = y, color = "Actual")) +
-  geom_line(aes(y = linear_predictions, color = "Linear Predictions")) +
+ggplot(summarized_data, aes(x = production_date)) +
+  geom_line(aes(y = sum_y, color = "Actual")) +
+  geom_line(aes(y = sum_linear_predictions, color = "Linear Predictions")) +
   labs(x = "Production Date", y = "Oil Production") +
   ggtitle("Comparison of Actual and Linear Predictions") +
   scale_color_manual(values = c("Actual" = "black", "Linear Predictions" = "red"))
@@ -466,9 +495,9 @@ ggplot(plot_data, aes(x = production_date)) +
 Comparison Between Actual and Tree Predicted Values
 ```{r}
 # Plot the line chart
-ggplot(plot_data, aes(x = production_date)) +
-  geom_line(aes(y = y, color = "Actual")) +
-  geom_line(aes(y = tree_predictions, color = "Tree Predictions")) +
+ggplot(summarized_data, aes(x = production_date)) +
+  geom_line(aes(y = sum_y, color = "Actual")) +
+  geom_line(aes(y = sum_tree_predictions, color = "Tree Predictions")) +
 
   labs(x = "Production Date", y = "Oil Production")  +
   ggtitle("Comparison of Actual, Predicted, and Tree Predicted Values") +
@@ -479,9 +508,9 @@ Comparison Between Actual and Random Forest Predictions
 
 ```{r}
 
-ggplot(plot_data, aes(x = production_date)) +
-  geom_line(aes(y = y, color = "Actual")) +
-   geom_line(aes(y = rf_predictions, color = "RF Predictions")) +
+ggplot(summarized_data, aes(x = production_date)) +
+  geom_line(aes(y = sum_y, color = "Actual")) +
+   geom_line(aes(y = sum_rf_predictions, color = "RF Predictions")) +
  labs(x = "Production Date", y = "Oil Production")  +
   ggtitle("Comparison of Actual, Random Forest Predictions") +
   scale_color_manual(values = c("Actual" = "black", "RF Predictions" = "blue"))
