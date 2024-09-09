@@ -1,4 +1,5 @@
 # Load necessary libraries
+```{r}
 library(ggplot2)
 library(here)
 library(dplyr)
@@ -12,21 +13,28 @@ library(stats)
 library(skimr)
 library(GGally)
 library('ggcorrplot')
+```
 
-# Load the dataset
+Loading the dataset
+
+```{r}
 df <- read_csv(here("Mall_Customers.csv"))
 # use this to save pics ggsave(here("images",".png"))
 # View the first few rows and descriptive statistics
-head(df)
 summary(df)
+```
+```{r}
 skim_without_charts(df)
+```
+
+```{r}
 # Rename columns using snake case
 colnames(df) <- c('customer_id', 'gender', 'age', 'annual_income', 'spending_score')
 # Plotting distributions
 columns <- c('age', 'annual_income', 'spending_score')
 colnames(df)
-
-
+```
+```{r}
 par(mfrow = c(2, 2))
 # Plotting distributions
 for (col in columns) {
@@ -37,10 +45,18 @@ for (col in columns) {
          border = 'black', 
          breaks = 10)  # Adjust 'breaks' to control bin width
 }
-# Clear current plot settings
+```
+
+View the distribution, in numbers of age and gender
+```{r}
+table(df$gender)
+```
+
+
 
 
 # Kernel density estimation plots with gender hue
+```{r}
 ggplot(df, aes(x = `annual_income`, fill = gender)) + 
   geom_density(alpha = 0.5) +
   theme_minimal()
@@ -52,180 +68,364 @@ for (col in columns) {
       theme_minimal()
   )
 }
+```
 
-# Boxplots by gender
-for (col in columns) {
-  print(
-  ggplot(df, aes(x = gender, y = df[[col]])) + 
-    geom_boxplot() +
-    theme_minimal() +
-    labs(title = paste("Boxplot of", col, "by gender"))
-  )
-}
-
-# gender distribution
-prop.table(table(df$gender))
-
-# Scatter plot
-ggplot(df, aes(x = `annual_income`, y = `spending_score`)) + 
-  geom_point() +
-  theme_minimal()
 
 # Pairplot equivalent in R using GGally
-
+```{r}
 ggpairs(df, aes(color = gender))
+```
+
+
+
 
 # Group by gender and summarize means
+```{r}
 df %>%
   group_by(gender) %>%
   summarize(across(c(age, `annual_income`, `spending_score`), mean))
-
-1# Correlation matrix and heatmap
+```
+ Correlation matrix and heatmap
+```{r}
 corr_matrix <- cor(df %>% select(-gender))
 ggcorrplot(corr_matrix, method = "circle", type = "lower", 
            lab = TRUE, lab_size = 3, colors = c("red", "white", "blue"))
-
+```
 # Bivariate clustering
-set.seed(230)
-kmeans2 <- kmeans(df[, c('annual_income', 'spending_score')], centers = 5)
-df$SpendingIncomeCluster <- as.factor(kmeans2$cluster)
-kmeans2
+
+While looking at the pairplots, we noticed that the relationship betweeen annual income and spending score has a star like pattern, which suggests that the data may be clustered along those lines. So we give it a try to see if Kmeans detects those patterns
+
+First we use the elbow method to decide how many clusters to create
+
+```{r}
 # Check inertia for bivariate clustering
 intertia_scores2 <- sapply(1:10, function(k) {
-  kmeans(df[, c('annual_income', 'spending_score')], centers = k)$tot.withinss
+  kmeans(df[, c('annual_income', 'spending_score')], centers = k, nstart=20)$tot.withinss
 })
 
-intertia_scores2
+
+
 
 plot(1:10, intertia_scores2, type = "b", pch = 19, 
      frame = FALSE, xlab = "Number of clusters K", ylab = "Total within-clusters sum of squares")
+```
+We can see the "elbow" at 5, where the reduction in sum of squared distances tapers off
 
-# Cluster centers
+```{r}
+set.seed(230)
+kmeans2 <- kmeans(df[, c('annual_income', 'spending_score')], centers = 5, nstart = 20)
+df$SpendingIncomeCluster <- as.factor(kmeans2$cluster)
 centers <- as.data.frame(kmeans2$centers)
 names(centers) <- c('x', 'y')
 
 # Scatter plot with cluster centers
 ggplot(df, aes(x = `annual_income`, y = `spending_score`, color = SpendingIncomeCluster)) + 
   geom_point(alpha = 0.7) +
-  geom_point(data = centers, aes(x = x, y = y), color = "black", size = 3, shape = 8) +
+  geom_point(data = centers, aes(x = x, y = y), color = "black", size = 3, shape = 15) +
   theme_minimal()
+```
+
+It can be a bit difficult to keep track of the numbers, so instead we give each cluster a marketing name to help us.
+```{r}
+df <- df %>%
+  mutate(bi_cluster_name = case_when(
+    SpendingIncomeCluster == 1 ~ "Balanced Buyers",    # Low income, low spenders
+    SpendingIncomeCluster == 2 ~ "Selective Savers",    # Low income, high spenders
+    SpendingIncomeCluster == 3 ~ "Thrifty Minimalists",        # Average income, average spenders
+    SpendingIncomeCluster == 4 ~ "Bargain Enthusiasts",       # High income, low spenders
+    SpendingIncomeCluster == 5 ~ "Premium Patrons"         # High income, high spenders
+  ))
+```
+
+First we check how many customers were grouped into each cluster
+```{r}
+table(df$bi_cluster_name)
+```
+Balanced Buyers have the highest number of customers. Looking back to the distribution of annual incomes, this is expected because the distribution peaks right in the middle, so most of the surveyed customers have average incomes.
+
 
 # Cross-tabulation of clusters by gender
-table(df$SpendingIncomeCluster, df$gender) %>%
+```{r}
+table(df$bi_cluster_name, df$gender) %>%
   prop.table(margin = 1)
+```
+Women dominate most of the clusters except selective savers. Focusing more on the clusters with an already high spending score: i.e. Premium Patrons and Bargain Enthusiasts, we can see that women form 60% of bargain enthusiasts, while Premium Patrons have a more balanced split. A possible insight here is that for the most expensive products, attention may be split more equally to products targeted at both men and women. however, for the expensive products targeted at low income earners, the marketing can be more directed towards female customers.
 
+
+Checking out the means across other variables from these clusters
+```{r}
 # Group by cluster and calculate means
 df %>%
-  group_by(SpendingIncomeCluster) %>%
+  group_by(bi_cluster_name) %>%
   summarize(across(c(age, `annual_income`, `spending_score`), mean))
+```
+
 
 # Multivariate clustering
+
+The real power of clustering is in discovering clusters that may not be as easy to see as the clusters we saw in two dimensions. Hence we try to discover clusters using all the variables using kmeans clustering
+
+To use the gender variable in clustering, we need to make it numeric
+
+```{r}
 df <- df %>%
   mutate(gender_Male = ifelse(gender == "Male", 1, 0))
+```
 
-# Scale the data
-scale_model <- preProcess(df[, c('age', 'annual_income', 'spending_score', 'gender_Male')], method = c("center", "scale"))
-scaled_data <- predict(scale_model, df[, c('age', 'annual_income', 'spending_score', 'gender_Male')])
+We also need to scale the data now that we have variables like age and gender that have a very different scale from spending score and annual icncome.
 
-# Fit k-means for multiple clusters
+```{r}
+scaled_data <- as.data.frame(scale(df[, c('age', 'annual_income', 'spending_score', 'gender_Male')]))
+```
+
+
+We use the elbow method to help us decide how many clusters we should have in the dataset
+
+```{r}
 intertia_scores3 <- sapply(1:10, function(k) {
-  kmeans(scaled_data, centers = k)$tot.withinss
+  kmeans(scaled_data, centers = k, nstart=20)$tot.withinss
 })
 
 plot(1:10, intertia_scores3, type = "b", pch = 19, 
      frame = FALSE, xlab = "Number of clusters K", ylab = "Total within-clusters sum of squares")
+```
 
-kmeans3 <- kmeans(df[, c('annual_income', 'spending_score', 'gender_Male', 'age')], centers = 6)
-df$multicluster <- as.factor(kmeans3$cluster)
-table(df$multicluster)
+It's a bit difficult to see the elbows in this case. However, the rate at which the within sum of squares reduces seems to slow down at 6 clusters. So we adopt 6 clusters
 
+Let's plot our new clusters
+```{r}
+
+kmeans3 <- kmeans(scaled_data, centers = 6, nstart = 50)
+df$kmeanscluster <- as.factor(kmeans3$cluster)
+scaled_data$kmeanscluster <- as.factor(kmeans3$cluster)
 centers <- as.data.frame(kmeans3$centers)
 names(centers) <- c('x', 'y')
 
 
-ggplot(df, aes(x = `annual_income`, y = `spending_score`, color = multicluster)) + 
+ggplot(scaled_data, aes(x = `annual_income`, y = `spending_score`, color = kmeanscluster)) + 
   geom_point(alpha = 0.7) +
   geom_point(data = centers, aes(x = x, y = y), color = "black", size = 3, shape = 8) +
   theme_minimal()
-
-# Pair scatterplots with multicluster colors
-
-ggpairs(df[,c('annual_income', 'spending_score', 'gender_Male', 'age', 'multicluster')], aes(color = multicluster), fig.show= 'hold', echo=TRUE)
-
-df %>%
-  group_by(multicluster) %>%
-  summarize(
-    mean_age = mean(age),
-    mean_annual_income = mean(annual_income),
-    mean_spending_score = mean(spending_score)
-  )
+```
 
 
-  # Perform hierarchical clustering with two variables
-dist_matrix <- dist(df[, c('annual_income', 'spending_score')], method = "euclidean")
-hclust_model2 <- hclust(dist_matrix, method = "ward.D2")
+We replot the pair scatterplots with all the clusters coloured to help us identify the sources of the splits
+
+```{r}
+ggpairs(scaled_data, aes(color = kmeanscluster))
+```
 
 
-  # Plot dendrogram
-  plot(hclust_model2, hang = -1, cex = 0.6, main = "Dendrogram")
-
-  # Cut the dendrogram into clusters
-  height <- 200
-  clusters <- cutree(hclust_model2, h = height)
-
-  # Add cluster labels to the dataset
-  df$HierarchicalCluster <- as.factor(clusters)
-
-  # Scatter plot with hierarchical clusters
-  ggplot(df, aes(x = `annual_income`, y = `spending_score`, color = HierarchicalCluster)) + 
-    geom_point(alpha = 0.7) +
-    theme_minimal()
-
-
-  # Perform hierarchical clustering with all variables
-  dist_matrix <- dist(df[, c('age', 'gender_Male', 'annual_income', 'spending_score')], method = "euclidean")
-  hclust_model_multi <- hclust(dist_matrix, method = "ward.D2")
-
-  # Plot dendrogram
-  plot(hclust_model_multi, hang = -1, cex = 0.6, main = "Dendrogram")
-
-  # Cut the dendrogram into clusters
-  height <- 130
-  clusters <- cutree(hclust_model_multi, h = height)
-
-  # Add cluster labels to the dataset
-  df$HierarchicalMultiCluster <- as.factor(clusters)
-
-  # Scatter plot with hierarchical clusters
-  ggplot(df, aes(x = `annual_income`, y = `spending_score`, color = HierarchicalMultiCluster)) + 
-    geom_point(alpha = 0.7) +
-    theme_minimal()
-
-
-
-
-
-
-  # Cross-tabulation of clusters by mean age, spending score, and annual income
-  df %>%
-    group_by(multicluster) %>%
-    summarize(mean_age = mean(age),
-              mean_spending_score = mean(spending_score),
-              mean_annual_income = mean(annual_income))
-
-df
+We take a look at how this looks like on average
 
 
 ```{r}
-kmeans2$tot.withinss
-kmeans3$tot.withinss
+df %>%
+  group_by(kmeanscluster) %>%
+  summarize(
+    mean_age = mean(age),
+    percent_male = mean(gender_Male),
+    mean_spending_score = mean(spending_score),
+    mean_annual_income = mean(annual_income),
+
+  )
+```
+
+The mean is likely not enough to understand the composition of each cluster, we take a look at the distributions
+
+Annual Income Distribution per clusters
+```{r}
+ggplot(df, aes(x = annual_income, fill = kmeanscluster)) + 
+  geom_histogram(binwidth = 5, position = "dodge", alpha = 0.7) +
+  theme_minimal() +
+  labs(title = "Annual Income Distribution by Cluster", x = "Annual Income", y = "Count") +
+  facet_wrap(~ kmeanscluster, scales = "free_y")
+```
+
+Based on the charts and average income we can describe clusters 1,2 and 5 as low-average income, 4 and 6 as high income, and 3 as income indiscriminate
+
+Spending Score per cluster
+```{r}
+ggplot(df, aes(x = spending_score, fill = kmeanscluster)) + 
+  geom_histogram(binwidth = 5, position = "dodge", alpha = 0.7) +
+  theme_minimal() +
+  labs(title = "Spending Score Distribution by Cluster", x = "Spending Score", y = "Count") +
+  facet_wrap(~ kmeanscluster, scales = "free_y")
+```
+Clusters 1 and 2 have high spending scores, 3 and 6 medium, 2 and 5 low spending scores
+
+Age distribution per cluster
+```{r}
+ggplot(df, aes(x = age, fill = kmeanscluster)) + 
+  geom_histogram(binwidth = 5, position = "dodge", alpha = 0.7) +
+  theme_minimal() +
+  labs(title = "Age Distribution by Cluster", x = "Age", y = "Count") +
+  facet_wrap(~ kmeanscluster, scales = "free_y")
+```
+Clusters 3,4 and 5 are younger. 6 is age indiscriminate, 1 and 2 are older
+```{r}
+df <- df %>%
+  mutate(cluster_names = case_when(
+    kmeanscluster == 1 ~ "Mama Savers",    # All female, older, low to average income, medium spending score. 
+    kmeanscluster == 2 ~ "Gentlemen Bargainers",  #All male, older, low to average income, medium spending score.
+    kmeanscluster == 3 ~ "Elite Spenders",        # All male, across all income levels, high spending score, younger males.
+    kmeanscluster == 4 ~ "Chic and Stylish",       # Mostly female, high income, high spending score, younger females
+    kmeanscluster == 5 ~ "Vibrant Shoppers",         # All female, young (average age: 25), low to average income, across spending scores.
+    kmeanscluster == 6 ~ "Frugal Affluents"      # High income, low spending score, with a near-even mix of male and female, age indiscriminate.
+  ))
+```
+
+Now we perform the same clustering with three different methods of hierarchical clustering, then we compare the results
+
+### Initialize hierarchical clusters and plot dendrogram
+```{r}
+  dist_matrix <- dist(scaled_data, method = "euclidean")
+  hclust_model_ward <- hclust(dist_matrix, method = "ward.D2")
+
+  # Plot dendrogram
+  plot(hclust_model_ward, hang = -1, cex = 0.6, main = "Ward D2 Dendrogram")
+  abline(h = 10, col = "red", lty = 2)
+
+```
+We cut the dendogram at height 10 and assign the clusters
+
+```{r}
+  # Cut the dendrogram into clusters
+  height <- 10
+  clusters <- cutree(hclust_model_ward, h = height)
+  df$HierarchicalWardCluster <- as.factor(clusters)
+  scaled_data$HierarchicalWardCluster <- as.factor(clusters)
+```
+
+### Hierarchical Clusters with Complete Linkage
+```{r}
+  dist_matrix <- dist(scaled_data, method = "euclidean")
+  hclust_model_complete <- hclust(dist_matrix, method = "complete")
+
+  # Plot dendrogram
+  plot(hclust_model_complete, hang = -1, cex = 0.6, main = " Complete Linkage Dendrogram")
+  abline(h = 4.5, col = "red", lty = 2)
+
+```
+
+```{r}
+  # Cut the dendrogram into clusters
+  height <- 4.5
+  clusters <- cutree(hclust_model_complete, h = height)
+  df$HierarchicalCompleteCluster <- as.factor(clusters)
+  scaled_data$HierarchicalCompleteCluster <- as.factor(clusters)
+```
+
+Hierarchical Clusters with Average Linkage
+```{r}
+  dist_matrix <- dist(scaled_data, method = "euclidean")
+  hclust_model_average <- hclust(dist_matrix, method = "average")
+
+  # Plot dendrogram
+  plot(hclust_model_average, hang = -1, cex = 0.6, main = "Average Linkage Dendrogram")
+  abline(h = 3, col = "red", lty = 2)
+
+```
+
+```{r}
+  # Cut the dendrogram into clusters
+  height <- 3
+  clusters <- cutree(hclust_model_average, h = height)
+  df$HierarchicalAverageCluster <- as.factor(clusters)
+  scaled_data$HierarchicalAverageCluster <- as.factor(clusters)
+```
+
+
+By using different linkage methods, we arrive at different number of clusters for hierarchical clustering.
+Number of clusters obtained from each linkage type using hierarchical clustering
+```{r}
+paste("Average Linkage:", length(unique(df$HierarchicalAverageCluster)))
+paste("Complete Linkage:", length(unique(df$HierarchicalCompleteCluster)))
+paste("Ward D2 Linkage:", length(unique(df$HierarchicalWardCluster)))
+
+```
+Note that for the complete linkage, by cutting the tree at a slightly lower level, we would arrive at 7 clusters, and we could also cut the average linkage tree at a slightly lower level to arrive at 7 clusters
+  
+### Are the clusters from the hierarchical clustering similar to those from Kmeans?
+To find out, we will plot the clusters on a scatter plot comparing annual income and spending score, then summarize each cluster with respect to the gender composition, average ages, annual incomes and spending scores.
+
+```{r}
+  ggplot(df, aes(x = `annual_income`, y = `spending_score`, color = kmeanscluster)) + 
+    geom_point(alpha = 0.7) +
+    theme_minimal()
+```
+
+```{r}
+  ggplot(df, aes(x = `annual_income`, y = `spending_score`, color = HierarchicalAverageCluster)) + 
+    geom_point(alpha = 0.7) +
+    theme_minimal()
+```
+
+```{r}
+  ggplot(df, aes(x = `annual_income`, y = `spending_score`, color = HierarchicalCompleteCluster)) + 
+    geom_point(alpha = 0.7) +
+    theme_minimal()
+```
+
+```{r}
+  ggplot(df, aes(x = `annual_income`, y = `spending_score`, color = HierarchicalWardCluster)) + 
+    geom_point(alpha = 0.7) +
+    theme_minimal()
+```
+Interestingly, complete and average linkages produce identical clusters. Ward D2 however, has slightly different clusters
+
+### Hierarchical Clusters (Complete)
+
+```{r}
+
+  df %>%
+    group_by(HierarchicalCompleteCluster) %>%
+    summarize(mean_age = mean(age),
+              percent_male = mean(gender_Male),
+              mean_spending_score = mean(spending_score),
+              mean_annual_income = mean(annual_income))
+```
+We can compare these results to the clusters obtained from kmeans clustering
+
+```{r}
+  df %>%
+    group_by(cluster_names) %>%
+    summarize(mean_age = mean(age),
+              percent_male = mean(gender_Male),
+              mean_spending_score = mean(spending_score),
+              mean_annual_income = mean(annual_income))
+```
+
+```{r}
+
+  df %>%
+    group_by(HierarchicalAverageCluster) %>%
+    summarize(mean_age = mean(age),
+              percent_male= mean(gender_Male),
+              mean_spending_score = mean(spending_score),
+              mean_annual_income = mean(annual_income))
+```
+
+```{r}
+
+  df %>%
+    group_by(HierarchicalWardCluster) %>%
+    summarize(mean_age = mean(age),
+              percent_male= mean(gender_Male),
+              mean_spending_score = mean(spending_score),
+              mean_annual_income = mean(annual_income))
+```
+One thing that jumps out is the fact that average and Ward D2 clustering provides only fully makle or fully female clusters. This is because these methods are sensitive to the fact that the gender variable only has 1s and -1s. However, Complete Cluster is more capable of handling this nuance.
+Hence, the clusters in average and ward d2 clusters are very similar, to the exclusion of Complete Clusters. One cluster that is consistently present across all clustering methods is the cluster 5 (complete) = cluster 5 (Average) = cluster 6 (ward 2) = cluster 1 (Kmeans). This shows that this particular cluster is very distinct from all others
+
+
+```{r}
+
+paste("Kmeans within sum of squares:", kmeans3$tot.withinss)
 
 # Assuming you have a hierarchical clustering model named hclust_model
 # and you want to cut it into a specific number of clusters, e.g., 3 clusters
 
-# Cut the dendrogram to form clusters
-height <- 200
-clusters <- cutree(hclust_model2, h = height)
 
 # Function to calculate within-cluster sum of squares
 calculate_withinss <- function(data, clusters) {
@@ -235,21 +435,78 @@ calculate_withinss <- function(data, clusters) {
   for (cluster in unique_clusters) {
     cluster_data <- data[clusters == cluster, ]
     cluster_center <- colMeans(cluster_data)
-    withinss <- sum(rowSums((cluster_data - cluster_center)^2))
+    withinss <- sum((cluster_data - cluster_center)^2)
     total_withinss <- total_withinss + withinss
   }
   
   return(total_withinss)
 }
 
-# Calculate the total within-cluster sum of squares for hierarchical clustering
-total_withinss_hclust <- calculate_withinss(df[, c('annual_income', 'spending_score')], clusters)
-total_withinss_hclust
 
-height <- 130
-clusters <- cutree(hclust_model_multi, h = height)
-total_withinss_hclust_multi <- calculate_withinss(df[, c('annual_income', 'spending_score', 'age', 'gender_Male')], clusters)
-total_withinss_hclust_multi
+
+height <- 4.5
+clusters <- cutree(hclust_model_complete, h = height)
+total_withinss_hclust_complete <- calculate_withinss(scaled_data[, c('annual_income', 'spending_score', 'age', 'gender_Male')], clusters)
+paste("Complete Linkage within sum of squares:", total_withinss_hclust_complete)
+height <- 2.7
+clusters <- cutree(hclust_model_average, h = height)
+total_withinss_hclust_average <- calculate_withinss(scaled_data[, c('annual_income', 'spending_score', 'age', 'gender_Male')], clusters)
+paste("Average Linkage within sum of squares:", total_withinss_hclust_average)
+height <- 10
+clusters <- cutree(hclust_model_ward, h = height)
+total_withinss_hclust_ward <- calculate_withinss(scaled_data[, c('annual_income', 'spending_score', 'age', 'gender_Male')], clusters)
+paste("Ward Linkage within sum of squares:", total_withinss_hclust_ward)
+
+
 ```
+Considering the three methods of linkages used for hierarchical clustering, complete linkage has the least sum of squares, and as such may offer the most accurate clusters among the hierarchical clusters
 
+```{r}
+total_ss <- sum(scaled_data[, c('annual_income', 'spending_score', 'age', 'gender_Male')]^2)  # Total sum of squares (TSS)
+betweenss <- total_ss - kmeans3$tot.withinss 
+
+paste("Kmeans between sum of squares:", betweenss)
+
+# Function to calculate between-cluster sum of squares
+calculate_betweenss <- function(data, clusters) {
+  overall_mean <- colMeans(data)
+  unique_clusters <- unique(clusters)
+  total_betweenss <- 0
+  
+  for (cluster in unique_clusters) {
+    cluster_data <- data[clusters == cluster, ]
+    cluster_size <- nrow(cluster_data)
+    cluster_center <- colMeans(cluster_data)
+    betweenss <- cluster_size * sum((cluster_center - overall_mean)^2)
+    total_betweenss <- total_betweenss + betweenss
+  }
+  
+  return(total_betweenss)
+}
+
+# Calculate between-cluster sum of squares for each hierarchical clustering method
+height <- 4.5
+clusters_complete <- cutree(hclust_model_complete, h = height)
+total_betweenss_hclust_complete <- calculate_betweenss(scaled_data[, c('annual_income', 'spending_score', 'age', 'gender_Male')], clusters_complete)
+paste("Complete Linkage between sum of squares:", total_betweenss_hclust_complete)
+
+height <- 3
+clusters_average <- cutree(hclust_model_average, h = height)
+total_betweenss_hclust_average <- calculate_betweenss(scaled_data[, c('annual_income', 'spending_score', 'age', 'gender_Male')], clusters_average)
+paste("Average Linkage between sum of squares:", total_betweenss_hclust_average)
+
+height <- 10
+clusters_ward <- cutree(hclust_model_ward, h = height)
+total_betweenss_hclust_ward <- calculate_betweenss(scaled_data[, c('annual_income', 'spending_score', 'age', 'gender_Male')], clusters_ward)
+paste("Ward Linkage between sum of squares:", total_betweenss_hclust_ward)
+```
+The best cluster is one that has the smallest "within sum of squares" and largest "between sum of squares". That means observations within a cluster are most similar while each cluster is more different from the next.
+
+In terms of this, we see that Complete Linkage has the lowest in both. However, ward linkage has the highest between ss, but its within ss is close to average linkage's, so it ranks much lower than Complete linkage.
+
+Ultimately, selecting the best clustering method will depend on how useful the identified clusters are towards achieving thr desired goal
+
+For the sake of simplicity, my comparison between Hierarchical clustering and Kmeans will be focused on Complete Linkage, since it has the lowest sum of squares
+summary(scaled_data)
+clusters
 Numbers not making sense for hierarchical cluster models
